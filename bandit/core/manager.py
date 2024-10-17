@@ -13,8 +13,6 @@ import sys
 import tokenize
 import traceback
 
-from rich import progress
-
 from bandit.core import constants as b_constants
 from bandit.core import extension_loader
 from bandit.core import issue
@@ -26,7 +24,6 @@ from bandit.core import test_set as b_test_set
 LOG = logging.getLogger(__name__)
 NOSEC_COMMENT = re.compile(r"#\s*nosec:?\s*(?P<tests>[^#]+)?#?")
 NOSEC_COMMENT_TESTS = re.compile(r"(?:(B\d+|[a-z\d_]+),?)+", re.IGNORECASE)
-PROGRESS_THRESHOLD = 50
 
 
 class BanditManager:
@@ -209,16 +206,13 @@ class BanditManager:
         files_list = set()
         excluded_files = set()
 
-        excluded_path_globs = self.b_conf.get_option("exclude_dirs") or []
-        included_globs = self.b_conf.get_option("include") or ["*.py"]
+        excluded_path_strings = self.b_conf.get_option('exclude_dirs') or []
+        included_globs = self.b_conf.get_option('include') or ['*.py']
 
         # if there are command line provided exclusions add them to the list
         if excluded_paths:
-            for path in excluded_paths.split(","):
-                if os.path.isdir(path):
-                    path = os.path.join(path, "*")
-
-                excluded_path_globs.append(path)
+            for path in excluded_paths.split(','):
+                excluded_path_strings.append(path)
 
         # build list of files we will analyze
         for fname in targets:
@@ -228,29 +222,21 @@ class BanditManager:
                     new_files, newly_excluded = _get_files_from_dir(
                         fname,
                         included_globs=included_globs,
-                        excluded_path_strings=excluded_path_globs,
+                        excluded_path_strings=excluded_path_strings
                     )
                     files_list.update(new_files)
                     excluded_files.update(newly_excluded)
                 else:
-                    LOG.warning(
-                        "Skipping directory (%s), use -r flag to "
-                        "scan contents",
-                        fname,
-                    )
+                    LOG.warning("Skipping directory (%s), use -r flag to "
+                                "scan contents", fname)
 
             else:
                 # if the user explicitly mentions a file on command line,
                 # we'll scan it, regardless of whether it's in the included
                 # file types list
-                if _is_file_included(
-                    fname,
-                    included_globs,
-                    excluded_path_globs,
-                    enforce_glob=False,
-                ):
-                    if fname != "-":
-                        fname = os.path.join(".", fname)
+                if _is_file_included(fname, included_globs,
+                                     excluded_path_strings,
+                                     enforce_glob=False):
                     files_list.add(fname)
                 else:
                     excluded_files.add(fname)
@@ -266,15 +252,8 @@ class BanditManager:
         # if we have problems with a file, we'll remove it from the files_list
         # and add it to the skipped list instead
         new_files_list = list(self.files_list)
-        if (
-            len(self.files_list) > PROGRESS_THRESHOLD
-            and LOG.getEffectiveLevel() <= logging.INFO
-        ):
-            files = progress.track(self.files_list)
-        else:
-            files = self.files_list
 
-        for count, fname in enumerate(files):
+        for count, fname in enumerate(self.files_list):
             LOG.debug("working on file : %s", fname)
 
             try:
@@ -331,13 +310,12 @@ class BanditManager:
             new_files_list.remove(fname)
         except Exception as e:
             LOG.error(
-                "Exception occurred when executing tests against %s.", fname
+                "Exception occurred when executing tests against "
+                '%s. Run "bandit --debug %s" to see the full '
+                "traceback.",
+                fname,
+                fname,
             )
-            if not LOG.isEnabledFor(logging.DEBUG):
-                LOG.error(
-                    'Run "bandit --debug %s" to see the full traceback.', fname
-                )
-
             self.skipped.append((fname, "exception while scanning file"))
             new_files_list.remove(fname)
             LOG.debug("  Exception string: %s", e)
@@ -410,9 +388,7 @@ def _is_file_included(
     # if this is matches a glob of files we look at, and it isn't in an
     # excluded path
     if _matches_glob_list(path, included_globs) or not enforce_glob:
-        if not _matches_glob_list(path, excluded_path_strings) and not any(
-            x in path for x in excluded_path_strings
-        ):
+        if not any(x in path for x in excluded_path_strings):
             return_value = True
 
     return return_value
