@@ -2661,12 +2661,6 @@ def _main():
 
     report = style_guide.check_files()
 
-    if options.statistics:
-        report.print_statistics()
-
-    if options.benchmark:
-        report.print_benchmark()
-
     if report.total_errors:
         if options.count:
             sys.stderr.write(str(report.total_errors) + '\n')
