@@ -204,31 +204,19 @@ class AstroidBuilder(raw_building.InspectBuilder):
         module = builder.visit_module(node, modname, node_file, package)
         return module, builder
 
-    def add_from_names_to_locals(self, node: nodes.ImportFrom) -> None:
-        """Store imported names to the locals.
+    def add_from_names_to_locals(self, node):
+        """Store imported names to the locals
 
         Resort the locals if coming from a delayed node
         """
-
-        def _key_func(node: nodes.NodeNG) -> int:
-            return node.fromlineno or 0
-
-        def sort_locals(my_list: list[nodes.NodeNG]) -> None:
+        _key_func = lambda node: node.fromlineno
+        def sort_locals(my_list):
             my_list.sort(key=_key_func)
 
-        assert node.parent  # It should always default to the module
-        for name, asname in node.names:
-            if name == "*":
-                try:
-                    imported = node.do_import_module()
-                except AstroidBuildingError:
-                    continue
-                for name in imported.public_names():
-                    node.parent.set_local(name, node)
-                    sort_locals(node.parent.scope().locals[name])  # type: ignore[arg-type]
-            else:
+        for (name, asname) in node.names:
+            if name != '*':
                 node.parent.set_local(asname or name, node)
-                sort_locals(node.parent.scope().locals[asname or name])  # type: ignore[arg-type]
+                sort_locals(node.parent.scope().locals[asname or name])
 
     def delayed_assattr(self, node: nodes.AssignAttr) -> None:
         """Visit a AssAttr node.
