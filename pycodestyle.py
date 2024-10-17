@@ -83,7 +83,7 @@ try:
 except ImportError:
     USER_CONFIG = None
 
-PROJECT_CONFIG = ('setup.cfg', 'tox.ini')
+PROJECT_CONFIG = ('setup.cfg', 'tox.ini', '.flake8')
 MAX_LINE_LENGTH = 79
 # Number of blank lines between various code parts.
 BLANK_LINES_CONFIG = {
