@@ -116,8 +116,8 @@ def infer_key_classes(node, context=None):
                     ) from exep
 
                 # ensure that module is loaded in astroid_cache, for cases when models is a package
-                if module_name not in MANAGER.astroid_cache:
-                    MANAGER.ast_from_module_name(module_name)
+                #if module_name not in MANAGER.astroid_cache:
+                #    MANAGER.ast_from_module_name(module_name)
 
             # create list from dict_values, because it may be modified in a loop
             for module in list(MANAGER.astroid_cache.values()):
