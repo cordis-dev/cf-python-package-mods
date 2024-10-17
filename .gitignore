@@ -1,0 +1,17 @@
+*
+!.gitignore
+!.gitignore-generate.exe
+!astroid
+!astroid/builder.py
+!bandit
+!bandit/core
+!bandit/core/manager.py
+!pycodestyle.py
+!pylint
+!pylint_django
+!pylint_django/transforms
+!pylint_django/transforms/foreignkey.py
+!pylint/checkers
+!pylint/checkers/exceptions.py
+!yamllint
+!yamllint/cli.py
