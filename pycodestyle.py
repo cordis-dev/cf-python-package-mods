@@ -68,7 +68,7 @@ if (
 ):  # pragma: no cover (<py310)
     tokenize._compile = lru_cache(tokenize._compile)  # type: ignore
 
-__version__ = '2.12.1'
+__version__ = '2.13.0'
 
 DEFAULT_EXCLUDE = '.svn,CVS,.bzr,.hg,.git,__pycache__,.tox'
 DEFAULT_IGNORE = 'E121,E123,E126,E226,E24,E704,W503,W504'
@@ -135,6 +135,7 @@ OPERATOR_REGEX = re.compile(r'(?:[^,\s])(\s*)(?:[-+*/|!<=>%&^]+|:=)(\s*)')
 LAMBDA_REGEX = re.compile(r'\blambda\b')
 HUNK_REGEX = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@.*$')
 STARTSWITH_DEF_REGEX = re.compile(r'^(async\s+def|def)\b')
+STARTSWITH_GENERIC_REGEX = re.compile(r'^(async\s+def|def|class|type)\s+\w+\[')
 STARTSWITH_TOP_LEVEL_REGEX = re.compile(r'^(async\s+def\s+|def\s+|class\s+|@)')
 STARTSWITH_INDENT_STATEMENT_REGEX = re.compile(
     r'^\s*({})\b'.format('|'.join(s.replace(' ', r'\s+') for s in (
@@ -234,9 +235,11 @@ def trailing_whitespace(physical_line):
     W291: spam(1) \n#
     W293: class Foo(object):\n    \n    bang = 12
     """
-    physical_line = physical_line.rstrip('\n')    # chr(10), newline
-    physical_line = physical_line.rstrip('\r')    # chr(13), carriage return
-    physical_line = physical_line.rstrip('\x0c')  # chr(12), form feed, ^L
+    # Strip these trailing characters:
+    # - chr(10), newline
+    # - chr(13), carriage return
+    # - chr(12), form feed, ^L
+    physical_line = physical_line.rstrip('\n\r\x0c')
     stripped = physical_line.rstrip(' \t\v')
     if physical_line != stripped:
         if stripped:
@@ -793,7 +796,6 @@ def whitespace_before_parameters(logical_line, tokens):
             # Allow "return (a.foo for a in range(5))"
             not keyword.iskeyword(prev_text) and
             (
-                sys.version_info < (3, 9) or
                 # 3.12+: type is a soft keyword but no braces after
                 prev_text == 'type' or
                 not keyword.issoftkeyword(prev_text)
@@ -968,10 +970,8 @@ def missing_whitespace(logical_line, tokens):
                 # Allow argument unpacking: foo(*args, **kwargs).
                 if prev_type == tokenize.OP and prev_text in '}])' or (
                     prev_type != tokenize.OP and
-                    prev_text not in KEYWORDS and (
-                        sys.version_info < (3, 9) or
-                        not keyword.issoftkeyword(prev_text)
-                    )
+                    prev_text not in KEYWORDS and
+                    not keyword.issoftkeyword(prev_text)
                 ):
                     need_space = None
             elif text in WS_OPTIONAL_OPERATORS:
@@ -1030,12 +1030,13 @@ def whitespace_around_named_parameter_equals(logical_line, tokens):
     E251: return magic(r = real, i = imag)
     E252: def complex(real, image: float=0.0):
     """
-    parens = 0
+    paren_stack = []
     no_space = False
     require_space = False
     prev_end = None
     annotated_func_arg = False
     in_def = bool(STARTSWITH_DEF_REGEX.match(logical_line))
+    in_generic = bool(STARTSWITH_GENERIC_REGEX.match(logical_line))
 
     message = "E251 unexpected spaces around keyword / parameter equals"
     missing_message = "E252 missing whitespace around parameter equals"
@@ -1053,15 +1054,22 @@ def whitespace_around_named_parameter_equals(logical_line, tokens):
                 yield (prev_end, missing_message)
         if token_type == tokenize.OP:
             if text in '([':
-                parens += 1
-            elif text in ')]':
-                parens -= 1
-            elif in_def and text == ':' and parens == 1:
+                paren_stack.append(text)
+                # PEP 696 defaults always use spaced-style `=`
+                # type A[T = default] = ...
+                # def f[T = default](): ...
+                # class C[T = default](): ...
+                if in_generic and paren_stack == ['[']:
+                    annotated_func_arg = True
+            elif text in ')]' and paren_stack:
+                paren_stack.pop()
+            # def f(arg: tp = default): ...
+            elif text == ':' and in_def and paren_stack == ['(']:
                 annotated_func_arg = True
-            elif parens == 1 and text == ',':
+            elif len(paren_stack) == 1 and text == ',':
                 annotated_func_arg = False
-            elif parens and text == '=':
-                if annotated_func_arg and parens == 1:
+            elif paren_stack and text == '=':
+                if annotated_func_arg and len(paren_stack) == 1:
                     require_space = True
                     if start == prev_end:
                         yield (prev_end, missing_message)
@@ -1069,7 +1077,7 @@ def whitespace_around_named_parameter_equals(logical_line, tokens):
                     no_space = True
                     if start != prev_end:
                         yield (prev_end, message)
-            if not parens:
+            if not paren_stack:
                 annotated_func_arg = False
 
         prev_end = end
@@ -1920,9 +1928,7 @@ class Checker:
 
     def run_check(self, check, argument_names):
         """Run a check plugin."""
-        arguments = []
-        for name in argument_names:
-            arguments.append(getattr(self, name))
+        arguments = [getattr(self, name) for name in argument_names]
         return check(*arguments)
 
     def init_checker_state(self, name, argument_names):
