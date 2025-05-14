@@ -10,5 +10,3 @@
 !pylint_django
 !pylint_django/transforms
 !pylint_django/transforms/foreignkey.py
-!yamllint
-!yamllint/cli.py
