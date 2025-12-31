@@ -59,16 +59,10 @@ import tokenize
 import warnings
 from fnmatch import fnmatch
 from functools import lru_cache
+from itertools import pairwise
 from optparse import OptionParser
 
-# this is a performance hack.  see https://bugs.python.org/issue43014
-if (
-        sys.version_info < (3, 10) and
-        callable(getattr(tokenize, '_compile', None))
-):  # pragma: no cover (<py310)
-    tokenize._compile = lru_cache(tokenize._compile)  # type: ignore
-
-__version__ = '2.13.0'
+__version__ = '2.14.0'
 
 DEFAULT_EXCLUDE = '.svn,CVS,.bzr,.hg,.git,__pycache__,.tox'
 DEFAULT_IGNORE = 'E121,E123,E126,E226,E24,E704,W503,W504'
@@ -158,6 +152,13 @@ if sys.version_info >= (3, 12):  # pragma: >=3.12 cover
     FSTRING_END = tokenize.FSTRING_END
 else:  # pragma: <3.12 cover
     FSTRING_START = FSTRING_MIDDLE = FSTRING_END = -1
+
+if sys.version_info >= (3, 14):  # pragma: >=3.14 cover
+    TSTRING_START = tokenize.TSTRING_START
+    TSTRING_MIDDLE = tokenize.TSTRING_MIDDLE
+    TSTRING_END = tokenize.TSTRING_END
+else:  # pragma: <3.14 cover
+    TSTRING_START = TSTRING_MIDDLE = TSTRING_END = -1
 
 _checks = {'physical_line': {}, 'logical_line': {}, 'tree': {}}
 
@@ -505,7 +506,7 @@ def missing_whitespace_after_keyword(logical_line, tokens):
     E275: from importable.module import(bar, baz)
     E275: if(foo): bar
     """
-    for tok0, tok1 in zip(tokens, tokens[1:]):
+    for tok0, tok1 in pairwise(tokens):
         # This must exclude the True/False/None singletons, which can
         # appear e.g. as "if x is None:", and async/await, which were
         # valid identifier names in old Python versions.
@@ -515,7 +516,7 @@ def missing_whitespace_after_keyword(logical_line, tokens):
                 tok0.string not in SINGLETONS and
                 not (tok0.string == 'except' and tok1.string == '*') and
                 not (tok0.string == 'yield' and tok1.string == ')') and
-                tok1.string not in ':\n'):
+                (tok1.string and tok1.string != ':' and tok1.string != '\n')):
             yield tok0.end, "E275 missing whitespace after keyword"
 
 
@@ -707,7 +708,12 @@ def continued_indentation(logical_line, tokens, indent_level, hang_closing,
             if verbose >= 4:
                 print(f"bracket depth {depth} indent to {start[1]}")
         # deal with implicit string concatenation
-        elif token_type in (tokenize.STRING, tokenize.COMMENT, FSTRING_START):
+        elif token_type in {
+                tokenize.STRING,
+                tokenize.COMMENT,
+                FSTRING_START,
+                TSTRING_START
+        }:
             indent_chances[start[1]] = str
         # visual indent after assert/raise/with
         elif not row and not depth and text in ["assert", "raise", "with"]:
@@ -883,12 +889,16 @@ def missing_whitespace(logical_line, tokens):
             brace_stack.append(text)
         elif token_type == FSTRING_START:  # pragma: >=3.12 cover
             brace_stack.append('f')
+        elif token_type == TSTRING_START:  # pragma: >=3.14 cover
+            brace_stack.append('t')
         elif token_type == tokenize.NAME and text == 'lambda':
             brace_stack.append('l')
         elif brace_stack:
             if token_type == tokenize.OP and text in {']', ')', '}'}:
                 brace_stack.pop()
             elif token_type == FSTRING_END:  # pragma: >=3.12 cover
+                brace_stack.pop()
+            elif token_type == TSTRING_END:  # pragma: >=3.14 cover
                 brace_stack.pop()
             elif (
                     brace_stack[-1] == 'l' and
@@ -908,6 +918,9 @@ def missing_whitespace(logical_line, tokens):
                     pass
                 # 3.12+ fstring format specifier
                 elif text == ':' and brace_stack[-2:] == ['f', '{']:  # pragma: >=3.12 cover  # noqa: E501
+                    pass
+                # 3.14+ tstring format specifier
+                elif text == ':' and brace_stack[-2:] == ['t', '{']:  # pragma: >=3.14 cover  # noqa: E501
                     pass
                 # tuple (and list for some reason?)
                 elif text == ',' and next_char in ')]':
@@ -958,7 +971,9 @@ def missing_whitespace(logical_line, tokens):
                         # allow keyword args or defaults: foo(bar=None).
                         brace_stack[-1:] == ['('] or
                         # allow python 3.8 fstring repr specifier
-                        brace_stack[-2:] == ['f', '{']
+                        brace_stack[-2:] == ['f', '{'] or
+                        # allow python 3.8 fstring repr specifier
+                        brace_stack[-2:] == ['t', '{']
                     )
             ):
                 pass
@@ -1055,12 +1070,6 @@ def whitespace_around_named_parameter_equals(logical_line, tokens):
         if token_type == tokenize.OP:
             if text in '([':
                 paren_stack.append(text)
-                # PEP 696 defaults always use spaced-style `=`
-                # type A[T = default] = ...
-                # def f[T = default](): ...
-                # class C[T = default](): ...
-                if in_generic and paren_stack == ['[']:
-                    annotated_func_arg = True
             elif text in ')]' and paren_stack:
                 paren_stack.pop()
             # def f(arg: tp = default): ...
@@ -1069,7 +1078,14 @@ def whitespace_around_named_parameter_equals(logical_line, tokens):
             elif len(paren_stack) == 1 and text == ',':
                 annotated_func_arg = False
             elif paren_stack and text == '=':
-                if annotated_func_arg and len(paren_stack) == 1:
+                if (
+                        # PEP 696 defaults always use spaced-style `=`
+                        # type A[T = default] = ...
+                        # def f[T = default](): ...
+                        # class C[T = default](): ...
+                        (in_generic and paren_stack == ['[']) or
+                        (annotated_func_arg and paren_stack == ['('])
+                ):
                     require_space = True
                     if start == prev_end:
                         yield (prev_end, missing_message)
@@ -1148,6 +1164,22 @@ def imports_on_separate_lines(logical_line):
             yield found, "E401 multiple imports on one line"
 
 
+_STRING_PREFIXES = frozenset(('u', 'U', 'b', 'B', 'r', 'R'))
+
+
+def _is_string_literal(line):
+    if line:
+        first_char = line[0]
+        if first_char in _STRING_PREFIXES:
+            first_char = line[1]
+        return first_char == '"' or first_char == "'"
+    return False
+
+
+_ALLOWED_KEYWORDS_IN_IMPORTS = (
+    'try', 'except', 'else', 'finally', 'with', 'if', 'elif')
+
+
 @register_check
 def module_imports_on_top_of_file(
         logical_line, indent_level, checker_state, noqa):
@@ -1166,15 +1198,6 @@ def module_imports_on_top_of_file(
 
     Okay: if x:\n    import os
     """  # noqa
-    def is_string_literal(line):
-        if line[0] in 'uUbB':
-            line = line[1:]
-        if line and line[0] in 'rR':
-            line = line[1:]
-        return line and (line[0] == '"' or line[0] == "'")
-
-    allowed_keywords = (
-        'try', 'except', 'else', 'finally', 'with', 'if', 'elif')
 
     if indent_level:  # Allow imports in conditional statement/function
         return
@@ -1182,25 +1205,25 @@ def module_imports_on_top_of_file(
         return
     if noqa:
         return
-    line = logical_line
-    if line.startswith('import ') or line.startswith('from '):
+    if logical_line.startswith(('import ', 'from ')):
         if checker_state.get('seen_non_imports', False):
             yield 0, "E402 module level import not at top of file"
-    elif re.match(DUNDER_REGEX, line):
-        return
-    elif any(line.startswith(kw) for kw in allowed_keywords):
-        # Allow certain keywords intermixed with imports in order to
-        # support conditional or filtered importing
-        return
-    elif is_string_literal(line):
-        # The first literal is a docstring, allow it. Otherwise, report
-        # error.
-        if checker_state.get('seen_docstring', False):
-            checker_state['seen_non_imports'] = True
+    elif not checker_state.get('seen_non_imports', False):
+        if DUNDER_REGEX.match(logical_line):
+            return
+        elif logical_line.startswith(_ALLOWED_KEYWORDS_IN_IMPORTS):
+            # Allow certain keywords intermixed with imports in order to
+            # support conditional or filtered importing
+            return
+        elif _is_string_literal(logical_line):
+            # The first literal is a docstring, allow it. Otherwise,
+            # report error.
+            if checker_state.get('seen_docstring', False):
+                checker_state['seen_non_imports'] = True
+            else:
+                checker_state['seen_docstring'] = True
         else:
-            checker_state['seen_docstring'] = True
-    else:
-        checker_state['seen_non_imports'] = True
+            checker_state['seen_non_imports'] = True
 
 
 @register_check
@@ -1615,6 +1638,29 @@ def ambiguous_identifier(logical_line, tokens):
         prev_start = start
 
 
+# https://docs.python.org/3/reference/lexical_analysis.html#string-and-bytes-literals
+_PYTHON_3000_VALID_ESC = frozenset([
+    '\n',
+    '\\',
+    '\'',
+    '"',
+    'a',
+    'b',
+    'f',
+    'n',
+    'r',
+    't',
+    'v',
+    '0', '1', '2', '3', '4', '5', '6', '7',
+    'x',
+
+    # Escape sequences only recognized in string literals
+    'N',
+    'u',
+    'U',
+])
+
+
 @register_check
 def python_3000_invalid_escape_sequence(logical_line, tokens, noqa):
     r"""Invalid escape sequences are deprecated in Python 3.6.
@@ -1625,41 +1671,27 @@ def python_3000_invalid_escape_sequence(logical_line, tokens, noqa):
     if noqa:
         return
 
-    # https://docs.python.org/3/reference/lexical_analysis.html#string-and-bytes-literals
-    valid = [
-        '\n',
-        '\\',
-        '\'',
-        '"',
-        'a',
-        'b',
-        'f',
-        'n',
-        'r',
-        't',
-        'v',
-        '0', '1', '2', '3', '4', '5', '6', '7',
-        'x',
-
-        # Escape sequences only recognized in string literals
-        'N',
-        'u',
-        'U',
-    ]
-
     prefixes = []
     for token_type, text, start, _, _ in tokens:
-        if token_type in {tokenize.STRING, FSTRING_START}:
+        if (
+                token_type == tokenize.STRING or
+                token_type == FSTRING_START or
+                token_type == TSTRING_START
+        ):
             # Extract string modifiers (e.g. u or r)
             prefixes.append(text[:text.index(text[-1])].lower())
 
-        if token_type in {tokenize.STRING, FSTRING_MIDDLE}:
+        if (
+                token_type == tokenize.STRING or
+                token_type == FSTRING_MIDDLE or
+                token_type == TSTRING_MIDDLE
+        ):
             if 'r' not in prefixes[-1]:
                 start_line, start_col = start
                 pos = text.find('\\')
                 while pos >= 0:
                     pos += 1
-                    if text[pos] not in valid:
+                    if text[pos] not in _PYTHON_3000_VALID_ESC:
                         line = start_line + text.count('\n', 0, pos)
                         if line == start_line:
                             col = start_col + pos
@@ -1671,7 +1703,11 @@ def python_3000_invalid_escape_sequence(logical_line, tokens, noqa):
                         )
                     pos = text.find('\\', pos + 1)
 
-        if token_type in {tokenize.STRING, FSTRING_END}:
+        if (
+                token_type == tokenize.STRING or
+                token_type == FSTRING_END or
+                token_type == TSTRING_END
+        ):
             prefixes.pop()
 
 
@@ -1869,7 +1905,7 @@ class Checker:
         self.max_line_length = options.max_line_length
         self.max_doc_length = options.max_doc_length
         self.indent_size = options.indent_size
-        self.fstring_start = 0
+        self.fstring_start = self.tstring_start = 0
         self.multiline = False  # in a multiline string?
         self.hang_closing = options.hang_closing
         self.indent_size = options.indent_size
@@ -1964,7 +2000,7 @@ class Checker:
                 continue
             if token_type == tokenize.STRING:
                 text = mute_string(text)
-            elif token_type == FSTRING_MIDDLE:  # pragma: >=3.12 cover
+            elif token_type in {FSTRING_MIDDLE, TSTRING_MIDDLE}:  # pragma: >=3.12 cover  # noqa: E501
                 # fstring tokens are "unescaped" braces -- re-escape!
                 brace_count = text.count('{') + text.count('}')
                 text = 'x' * (len(text) + brace_count)
@@ -2056,6 +2092,8 @@ class Checker:
 
         if token.type == FSTRING_START:  # pragma: >=3.12 cover
             self.fstring_start = token.start[0]
+        elif token.type == TSTRING_START:  # pragma: >=3.14 cover
+            self.tstring_start = token.start[0]
         # a newline token ends a single physical line.
         elif _is_eol_token(token):
             # if the file does not end with a newline, the NEWLINE
@@ -2067,7 +2105,8 @@ class Checker:
                 self.check_physical(token.line)
         elif (
                 token.type == tokenize.STRING and '\n' in token.string or
-                token.type == FSTRING_END
+                token.type == FSTRING_END or
+                token.type == TSTRING_END
         ):
             # Less obviously, a string that contains newlines is a
             # multiline string, either triple-quoted or with internal
@@ -2088,6 +2127,8 @@ class Checker:
                 return
             if token.type == FSTRING_END:  # pragma: >=3.12 cover
                 start = self.fstring_start
+            elif token.type == TSTRING_END:  # pragma: >=3.12 cover
+                start = self.tstring_start
             else:
                 start = token.start[0]
             end = token.end[0]
