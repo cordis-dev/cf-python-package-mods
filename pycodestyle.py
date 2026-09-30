@@ -62,7 +62,7 @@ from functools import lru_cache
 from itertools import pairwise
 from optparse import OptionParser
 
-__version__ = '2.14.0'
+__version__ = '2.15.0'
 
 DEFAULT_EXCLUDE = '.svn,CVS,.bzr,.hg,.git,__pycache__,.tox'
 DEFAULT_IGNORE = 'E121,E123,E126,E226,E24,E704,W503,W504'
@@ -1205,7 +1205,10 @@ def module_imports_on_top_of_file(
         return
     if noqa:
         return
-    if logical_line.startswith(('import ', 'from ')):
+    if logical_line.startswith((
+            'import ', 'from ',
+            'lazy import ', 'lazy from ',
+    )):
         if checker_state.get('seen_non_imports', False):
             yield 0, "E402 module level import not at top of file"
     elif not checker_state.get('seen_non_imports', False):
@@ -2573,7 +2576,7 @@ def read_config(options, args, arglist, parser):
             print('user configuration: %s' % USER_CONFIG)
         config.read(USER_CONFIG)
 
-    parent = tail = args and os.path.abspath(os.path.commonprefix(args))
+    parent = tail = args and os.path.abspath(os.path.commonpath(args))
     while tail:
         if config.read(os.path.join(parent, fn) for fn in PROJECT_CONFIG):
             local_dir = parent
